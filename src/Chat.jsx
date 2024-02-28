@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import socket from "./socket";
 import axios from "axios";
+import InfiniteScroll from "react-infinite-scroll-component";
 
 const profile = JSON.parse(localStorage.getItem("profile"));
 const usernames = [
@@ -13,12 +14,19 @@ const usernames = [
     value: "user65d5fcb596418cb3cd318e78",
   },
 ];
-export default function Chat() {
-  const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState([]);
-  const [recevier, setReceiver] = useState("");
 
-  // Get profile user
+const LIMIT = 10;
+const PAGE = 1;
+export default function Chat() {
+  const [value, setValue] = useState("");
+  const [conversations, setConversations] = useState([]);
+  const [receiver, setReceiver] = useState("");
+
+  const [pagination, setPagination] = useState({
+    page: PAGE,
+    total_page: 0,
+  });
+
   const getProfile = (username) => {
     axios
       .get(`/user/${username}`, {
@@ -30,49 +38,90 @@ export default function Chat() {
       });
   };
   useEffect(() => {
-    // Kết nối socket
-    socket.connect();
-    console.log("data");
-    // Gửi id của user đến sever
-    socket.auth = {
-      _id: profile._id,
-    };
-    // Nhận tin nhắn từ server cho người nhận thông qua emit
-    // recevier private message từ sever gửi đến client
-    socket.on("recevier private message", (data) => {
-      console.log("data", data);
-      const content = data.content;
-      // Lấy nội dung rồi set vào mảng messages
-      setMessages((prev) => [
-        ...prev,
-        {
-          content,
-          isSender: false,
-        },
-      ]);
+    socket.on("receive_message", (data) => {
+      const { payload } = data;
+      setConversations((conversations) => [...conversations, payload]);
+    });
+    socket.on("connect_error", (err) => {
+      console.log(err.data);
     });
 
-    // Ngắt kết nối socket khi chuyển tab tránh memory leak (tràn bộ nhớ)
+    socket.on("disconnect", (reason) => {
+      console.log(reason);
+      alert(`You were ${reason} from the server`);
+    });
+
     return () => {
       socket.disconnect();
     };
   }, []);
 
+  useEffect(() => {
+    if (receiver) {
+      axios
+        .get(`/conversations/receivers/${receiver}`, {
+          baseURL: import.meta.env.VITE_API_URL,
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem("access_token")}`,
+          },
+          params: {
+            limit: LIMIT,
+            page: PAGE,
+          },
+        })
+        .then((res) => {
+          const { conversations, page, total_page } = res.data.result;
+          setConversations(conversations);
+          setPagination({
+            page,
+            total_page,
+          });
+        });
+    }
+  }, [receiver]);
+
+  const fetchMoreConversations = () => {
+    if (receiver && pagination.page < pagination.total_page) {
+      axios
+        .get(`/conversations/receivers/${receiver}`, {
+          baseURL: import.meta.env.VITE_API_URL,
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem("access_token")}`,
+          },
+          params: {
+            limit: LIMIT,
+            page: pagination.page + 1,
+          },
+        })
+        .then((res) => {
+          const { conversations, page, total_page } = res.data.result;
+          setConversations((prev) => [...prev, ...conversations]);
+          setPagination({
+            page,
+            total_page,
+          });
+        });
+    }
+  };
+
   const send = (e) => {
     e.preventDefault();
-    setMessage("");
-    // Gửi 1 emit event đến sever và gửi to là người id của người nhận
-    console.log("recevier", recevier);
-    socket.emit("private message", {
-      content: message,
-      to: recevier,
+    setValue("");
+    const conversation = {
+      content: value,
+      sender_id: profile._id,
+      receiver_id: receiver,
+    };
+
+    socket.emit("send_message", {
+      payload: conversation,
     });
-    setMessages((messages) => [
-      ...messages,
+    setConversations((conversations) => [
       {
-        content: message,
-        isSender: true,
+        ...conversation,
+        _id: new Date().getTime(),
       },
+      ...conversations,
     ]);
   };
   return (
@@ -87,26 +136,54 @@ export default function Chat() {
           </div>
         ))}
       </div>
-      <div className="chat">
-        {messages.map((message, index) => (
-          <div key={index}>
-            <div className="message-container">
-              <div
-                className={
-                  "message" + (message.isSender ? "message-right " : "")
-                }
-              >
-                {message.content}
+      <div
+        id="scrollableDiv"
+        style={{
+          height: 300,
+          overflow: "auto",
+          display: "flex",
+          flexDirection: "column-reverse",
+        }}
+      >
+        {/*Put the scroll bar always on the bottom*/}
+        <InfiniteScroll
+          dataLength={conversations.length}
+          next={fetchMoreConversations}
+          style={{ display: "flex", flexDirection: "column-reverse" }} //To put endMessage and loader to the top.
+          inverse={true} //
+          hasMore={pagination.page < pagination.total_page}
+          loader={<h4>Loading...</h4>}
+          scrollableTarget="scrollableDiv"
+          endMessage={
+            <p style={{ textAlign: "center" }}>
+              <b>Yay! You have seen it all</b>
+            </p>
+          }
+        >
+          {conversations.map((conversation) => (
+            <div key={conversation._id}>
+              <div className="message-container">
+                <div
+                  className={
+                    "message " +
+                    (conversation.sender_id === profile._id
+                      ? "message-right"
+                      : "")
+                  }
+                >
+                  {conversation.content}
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </InfiniteScroll>
       </div>
+
       <form onSubmit={send}>
         <input
           type="text"
-          onChange={(e) => setMessage(e.target.value)}
-          value={message}
+          onChange={(e) => setValue(e.target.value)}
+          value={value}
         />
         <button type="submit">Send</button>
       </form>
